@@ -1210,7 +1210,7 @@ export async function renderPage(request, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gsspStatus, headers: { Location: result.redirect.destination } });
+        return new Response(null, { status: gsspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
         return new Response("404", { status: 404 });
@@ -1269,7 +1269,7 @@ export async function renderPage(request, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gspStatus, headers: { Location: result.redirect.destination } });
+        return new Response(null, { status: gspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
         return new Response("404", { status: 404 });
@@ -3346,12 +3346,13 @@ export function matchConfigPattern(
 }
 
 /**
- * Sanitize a redirect/rewrite destination by collapsing leading // to /
- * for non-external URLs, preventing unintended protocol-relative redirects.
+ * Sanitize a redirect/rewrite destination by collapsing leading slashes and
+ * backslashes to a single "/" for non-external URLs. Browsers interpret "\"
+ * as "/" in URL contexts, so "\/evil.com" becomes "//evil.com" (protocol-relative).
  */
 function sanitizeDestinationLocal(dest: string): string {
   if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
-  if (dest.startsWith("//")) dest = dest.replace(/^\/\/+/, "/");
+  dest = dest.replace(/^[\\/]+/, "/");
   return dest;
 }
 

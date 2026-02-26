@@ -1276,7 +1276,15 @@ async function _handleRequest(request) {
   if (typeof middlewareFn === "function" && matchesMiddleware(cleanPathname, middlewareMatcher)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
-      const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+      // Strip .rsc suffix from the URL — it's an internal transport detail that
+      // middleware should never see (matches Next.js behavior).
+      let mwRequest = request;
+      if (isRscRequest && pathname.endsWith(".rsc")) {
+        const mwUrl = new URL(request.url);
+        mwUrl.pathname = cleanPathname;
+        mwRequest = new Request(mwUrl, request);
+      }
+      const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
       const mwResponse = await middlewareFn(nextRequest);
       if (mwResponse) {
         // Check for x-middleware-next (continue)
@@ -1323,12 +1331,13 @@ async function _handleRequest(request) {
 
   // Unpack x-middleware-request-* headers into the request context so that
   // headers() returns the middleware-modified headers instead of the original
-  // request headers. Also strip those internal headers from the set that will
-  // be merged into the outgoing HTTP response.
+  // request headers. Strip ALL x-middleware-* headers from the set that will
+  // be merged into the outgoing HTTP response — this prefix is reserved for
+  // internal routing signals and must never reach clients.
   if (_middlewareResponseHeaders) {
     applyMiddlewareRequestHeaders(_middlewareResponseHeaders);
     for (const key of [..._middlewareResponseHeaders.keys()]) {
-      if (key.startsWith("x-middleware-request-")) {
+      if (key.startsWith("x-middleware-")) {
         _middlewareResponseHeaders.delete(key);
       }
     }

@@ -549,12 +549,11 @@ export function sanitizeDestination(dest: string): string {
   if (dest.startsWith("http://") || dest.startsWith("https://")) {
     return dest;
   }
-  // Collapse leading double (or more) slashes to a single slash.
-  // This prevents protocol-relative URLs like //evil.com from being emitted
-  // as Location headers.
-  if (dest.startsWith("//")) {
-    dest = dest.replace(/^\/\/+/, "/");
-  }
+  // Normalize leading backslashes to forward slashes. Browsers interpret
+  // backslash as forward slash in URL contexts, so "\/evil.com" becomes
+  // "//evil.com" (protocol-relative redirect). Replace any mix of leading
+  // slashes and backslashes with a single forward slash.
+  dest = dest.replace(/^[\\/]+/, "/");
   return dest;
 }
 
@@ -598,6 +597,21 @@ export async function proxyExternalRequest(
   headers.set("host", targetUrl.host);
   // Remove headers that should not be forwarded to external services
   headers.delete("connection");
+  // Strip credentials and internal headers to prevent leaking auth tokens,
+  // session cookies, and middleware internals to third-party origins.
+  headers.delete("cookie");
+  headers.delete("authorization");
+  headers.delete("x-api-key");
+  headers.delete("proxy-authorization");
+  const keysToDelete: string[] = [];
+  for (const key of headers.keys()) {
+    if (key.startsWith("x-middleware-")) {
+      keysToDelete.push(key);
+    }
+  }
+  for (const key of keysToDelete) {
+    headers.delete(key);
+  }
 
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
@@ -613,12 +627,22 @@ export async function proxyExternalRequest(
     init.duplex = "half";
   }
 
+  // Enforce a timeout so slow/unresponsive upstreams don't hold connections
+  // open indefinitely (DoS amplification risk on Node.js dev/prod servers).
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(targetUrl.href, init);
-  } catch (e) {
+    upstreamResponse = await fetch(targetUrl.href, { ...init, signal: controller.signal });
+  } catch (e: any) {
+    if (e?.name === "AbortError") {
+      console.error("[vinext] External rewrite proxy timeout:", targetUrl.href);
+      return new Response("Gateway Timeout", { status: 504 });
+    }
     console.error("[vinext] External rewrite proxy error:", e);
     return new Response("Bad Gateway", { status: 502 });
+  } finally {
+    clearTimeout(timeout);
   }
 
   // Build the response to return to the client.
